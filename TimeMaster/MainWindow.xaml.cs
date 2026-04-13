@@ -1,46 +1,35 @@
-﻿using System.IO;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
+﻿using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 
 namespace TimeMaster
 {
-    /// <summary>
-    /// Interaction logic for MainWindow.xaml
-    /// </summary>
     public partial class MainWindow : Window
     {
         private readonly DispatcherTimer _timer;
-        private bool _isDragging = false;
+        private readonly SettingsService _settingsService;
+
+        private AppSettings _settings = new();
+        private List<ReminderSetting> _tasks = new();
+
+        private bool _isDragging;
         private Point _startPoint;
-        private const string SETTINGS_FILE = "clock_settings.json";
-        private bool _isMouseTransparent = true;
-        private TimerCollection tasks;
+        private bool _isMouseTransparent;
+        private bool _allowClose;
+        private bool _isMouseThroughEnabled = true;
+        private bool _isHovering;
+        private bool _isLeftCtrlPressed;
+
         public MainWindow()
         {
             InitializeComponent();
 
-            // 加载保存的位置
-            LoadWindowPosition();
+            _settingsService = new SettingsService();
+            ReloadSettings(applyPosition: true);
 
-            tasks = TimerConfigHelper.GetTimers();
-            foreach (TimerElement timer in tasks) 
-            {
-                Console.WriteLine(timer);
-                Console.WriteLine(timer.GetCountdownTime());
-            }
-
-            // 初始化定时器
             _timer = new DispatcherTimer
             {
                 Interval = TimeSpan.FromSeconds(1)
@@ -50,79 +39,128 @@ namespace TimeMaster
 
             UpdateTime();
 
-            // 键盘和鼠标事件
-            this.KeyDown += Window_KeyDown;
-            this.KeyUp += Window_KeyUp;
-            this.MouseLeftButtonDown += Window_MouseLeftButtonDown;
-            this.MouseMove += Window_MouseMove;
-            this.MouseLeftButtonUp += Window_MouseLeftButtonUp;
-            // 窗口关闭时最小化到托盘而不是退出
-            this.Closing += (s, e) =>
+            KeyDown += Window_KeyDown;
+            KeyUp += Window_KeyUp;
+            MouseLeftButtonDown += Window_MouseLeftButtonDown;
+            MouseMove += Window_MouseMove;
+            MouseLeftButtonUp += Window_MouseLeftButtonUp;
+            MouseEnter += Window_MouseEnter;
+            MouseLeave += Window_MouseLeave;
+
+            Closing += (_, e) =>
             {
+                if (_allowClose)
+                {
+                    return;
+                }
+
                 e.Cancel = true;
-                this.Hide();
+                Hide();
             };
         }
 
-        private void Timer_Tick(object sender, EventArgs e)
+        public void ShowClockWindow()
+        {
+            Show();
+            WindowState = WindowState.Normal;
+            Activate();
+        }
+
+        public void ExitApplication()
+        {
+            _allowClose = true;
+            Close();
+        }
+
+        public void OpenSettingsWindow()
+        {
+            var settingsWindow = new SettingsWindow(_settingsService, _settings)
+            {
+                Owner = this
+            };
+
+            if (settingsWindow.ShowDialog() == true)
+            {
+                ReloadSettings(applyPosition: true);
+                if (!IsPositionValid(Left, Top, Width, Height))
+                {
+                    MoveWindowToDefaultPosition();
+                    SaveWindowPlacement();
+                }
+            }
+        }
+
+        private void Timer_Tick(object? sender, EventArgs e)
         {
             UpdateTime();
         }
 
         private void UpdateTime()
         {
-            string now = DateTime.Now.ToString("HH:mm:ss");
-            foreach (TimerElement timer in tasks) 
+            var now = DateTime.Now;
+            var nowText = now.ToString("HH:mm:ss");
+
+            foreach (var timer in _tasks)
             {
-                if (timer.IsActive && now == timer.GetCountdownTime())
-                { 
-                    CountdownWindow countdownWindow = new CountdownWindow(timer);
-                    countdownWindow.Show();
+                if (!timer.IsActive)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (nowText == timer.GetCountdownTime())
+                    {
+                        new CountdownWindow(timer).Show();
+                    }
+                }
+                catch
+                {
+                    // Ignore malformed reminder entries so a single invalid row does not stop the clock.
                 }
             }
-            TimeText.Text = DateTime.Now.ToString("HH:mm:ss");
-        }
 
+            TimeText.Text = nowText;
+        }
 
         private void Window_KeyDown(object sender, KeyEventArgs e)
         {
-            // 按下Ctrl键时临时禁用鼠标穿透
-            if (e.Key == Key.LeftCtrl || e.Key == Key.RightCtrl)
+            if (e.Key == Key.LeftCtrl && !_isLeftCtrlPressed)
             {
-                SetMouseTransparent(false);
+                _isLeftCtrlPressed = true;
+                ApplyMouseThroughState();
             }
         }
 
         private void Window_KeyUp(object sender, KeyEventArgs e)
         {
-            // 释放Ctrl键时恢复鼠标穿透
-            if ((e.Key == Key.LeftCtrl || e.Key == Key.RightCtrl) && !_isDragging)
+            if (e.Key == Key.LeftCtrl)
             {
-                SetMouseTransparent(true);
+                _isLeftCtrlPressed = false;
+                ApplyMouseThroughState();
             }
         }
 
-
         private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
-            Console.WriteLine(DateTime.Now.ToLongTimeString() + " Window_MouseLeftButtonDown");
-            // 按下Ctrl键时开始拖动
-            if (Keyboard.Modifiers == ModifierKeys.Control)
+            if (!CanInteractWithMouse())
             {
-                _isDragging = true;
-                _startPoint = e.GetPosition(this);
-                this.CaptureMouse();
+                return;
             }
+
+            _isDragging = true;
+            _startPoint = e.GetPosition(this);
+            CaptureMouse();
+            ApplyMouseThroughState();
         }
 
         private void Window_MouseMove(object sender, MouseEventArgs e)
         {
-            Console.WriteLine(DateTime.Now.ToLongTimeString() + " Window_MouseMove");
             if (_isDragging)
             {
-                Point currentPosition = e.GetPosition(this);
-                this.Left += currentPosition.X - _startPoint.X;
-                this.Top += currentPosition.Y - _startPoint.Y;
+                var currentPosition = e.GetPosition(this);
+                Left += currentPosition.X - _startPoint.X;
+                Top += currentPosition.Y - _startPoint.Y;
             }
         }
 
@@ -131,41 +169,124 @@ namespace TimeMaster
             if (_isDragging)
             {
                 _isDragging = false;
-                this.ReleaseMouseCapture();
-                SaveWindowPosition(); // 保存新位置
-                // 拖动结束后恢复鼠标穿透
-                if (Keyboard.Modifiers != ModifierKeys.Control)
-                {
-                    SetMouseTransparent(true);
-                }
+                ReleaseMouseCapture();
+                SaveWindowPlacement();
+                ApplyMouseThroughState();
             }
+        }
+
+        private void Window_MouseEnter(object sender, MouseEventArgs e)
+        {
+            if (_isMouseTransparent)
+            {
+                return;
+            }
+
+            _isHovering = true;
+            ApplyHoverVisual(true);
+            UpdateWindowOpacity();
+        }
+
+        private void Window_MouseLeave(object sender, MouseEventArgs e)
+        {
+            _isHovering = false;
+            ApplyHoverVisual(false);
+            UpdateWindowOpacity();
         }
 
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
-            // 默认状态下鼠标穿透
-            SetMouseTransparent(true);
+            ApplyMouseThroughState();
+            ApplyHoverVisual(false, immediate: true);
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            base.OnClosed(e);
+            _timer.Stop();
+        }
+
+        private bool CanInteractWithMouse()
+        {
+            return !_isMouseThroughEnabled || _isLeftCtrlPressed;
+        }
+
+        private void ReloadSettings(bool applyPosition)
+        {
+            _settings = _settingsService.Load();
+            ApplyClockSizePreset(_settings.ClockSizePreset);
+            ApplyClockColorScheme(_settings.ClockColorScheme);
+
+            _isMouseThroughEnabled = _settings.EnableMouseThrough;
+            if (!_isMouseThroughEnabled)
+            {
+                _isLeftCtrlPressed = false;
+            }
+
+            ApplyMouseThroughState();
+
+            if (applyPosition)
+            {
+                if (IsPositionValid(_settings.ClockLeft, _settings.ClockTop, Width, Height))
+                {
+                    Left = _settings.ClockLeft;
+                    Top = _settings.ClockTop;
+                }
+                else
+                {
+                    MoveWindowToDefaultPosition();
+                }
+            }
+
+            _tasks = _settings.Reminders.Select(static item => item.Clone()).ToList();
+        }
+
+        private void ApplyClockSizePreset(string presetKey)
+        {
+            var preset = ClockSizePresets.GetByKey(presetKey);
+            Width = preset.Width;
+            Height = preset.Height;
+            TimeText.FontSize = preset.FontSize;
+
+            _settings.ClockSizePreset = preset.Key;
+            _settings.ClockWidth = preset.Width;
+            _settings.ClockHeight = preset.Height;
+        }
+
+        private void ApplyClockColorScheme(string schemeKey)
+        {
+            var scheme = ClockColorSchemes.GetByKey(schemeKey);
+            ClockBorder.Background = BuildBrush(scheme.BackgroundColor, Color.FromArgb(0x88, 0, 0, 0));
+            TimeText.Foreground = BuildBrush(scheme.ForegroundColor, Colors.WhiteSmoke);
+            _settings.ClockColorScheme = scheme.Key;
+        }
+
+        private void ApplyMouseThroughState()
+        {
+            var shouldTransparent = _isMouseThroughEnabled && !_isLeftCtrlPressed && !_isDragging;
+            SetMouseTransparent(shouldTransparent);
+
+            if (shouldTransparent)
+            {
+                _isHovering = false;
+                ApplyHoverVisual(false);
+            }
+
+            UpdateWindowOpacity();
         }
 
         private void SetMouseTransparent(bool transparent)
         {
             if (_isMouseTransparent == transparent)
+            {
                 return;
+            }
 
             _isMouseTransparent = transparent;
 
-            // 更新窗口外观提供视觉反馈
-            if (transparent)
-            {
-                this.Opacity = 0.8; // 半透明
-            }
-            else
-            {
-                this.Opacity = 1.0; // 完全不透明
-            }
             var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-            int extendedStyle = WindowsServices.GetWindowLong(hwnd, WindowsServices.GWL_EXSTYLE);
+            var extendedStyle = WindowsServices.GetWindowLong(hwnd, WindowsServices.GWL_EXSTYLE);
 
             if (transparent)
             {
@@ -179,81 +300,114 @@ namespace TimeMaster
             }
         }
 
-        private bool IsPositionValid(double left, double top)
+        private void ApplyHoverVisual(bool isHovering, bool immediate = false)
         {
-            // 添加5px的边距，确保窗口标题栏等不会被遮挡
+            var targetScale = isHovering ? 1.04 : 1.0;
+            var targetShadowOpacity = isHovering ? 0.45 : 0.20;
+            var targetShadowBlur = isHovering ? 16.0 : 8.0;
+
+            AnimateDouble(ClockScaleTransform, ScaleTransform.ScaleXProperty, targetScale, immediate);
+            AnimateDouble(ClockScaleTransform, ScaleTransform.ScaleYProperty, targetScale, immediate);
+            AnimateDouble(ClockShadowEffect, DropShadowEffect.OpacityProperty, targetShadowOpacity, immediate);
+            AnimateDouble(ClockShadowEffect, DropShadowEffect.BlurRadiusProperty, targetShadowBlur, immediate);
+        }
+
+        private void UpdateWindowOpacity()
+        {
+            var targetOpacity = _isMouseTransparent ? 0.78 : (_isHovering ? 1.0 : 0.93);
+            AnimateDouble(this, OpacityProperty, targetOpacity, immediate: false);
+        }
+
+        private static void AnimateDouble(DependencyObject target, DependencyProperty property, double toValue, bool immediate)
+        {
+            if (immediate)
+            {
+                target.SetValue(property, toValue);
+                return;
+            }
+
+            var animation = new DoubleAnimation
+            {
+                To = toValue,
+                Duration = TimeSpan.FromMilliseconds(160),
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+            };
+
+            switch (target)
+            {
+                case UIElement uiElement:
+                    uiElement.BeginAnimation(property, animation, HandoffBehavior.SnapshotAndReplace);
+                    break;
+                case Animatable animatable:
+                    animatable.BeginAnimation(property, animation, HandoffBehavior.SnapshotAndReplace);
+                    break;
+            }
+        }
+
+        private static SolidColorBrush BuildBrush(string colorText, Color fallbackColor)
+        {
+            try
+            {
+                var converted = ColorConverter.ConvertFromString(colorText);
+                if (converted is Color color)
+                {
+                    var brush = new SolidColorBrush(color);
+                    brush.Freeze();
+                    return brush;
+                }
+            }
+            catch
+            {
+                // Fallback below.
+            }
+
+            var fallbackBrush = new SolidColorBrush(fallbackColor);
+            fallbackBrush.Freeze();
+            return fallbackBrush;
+        }
+
+        private void SaveWindowPlacement()
+        {
+            _settings.ClockLeft = Left;
+            _settings.ClockTop = Top;
+
+            try
+            {
+                _settingsService.Save(_settings);
+            }
+            catch
+            {
+                // Keep runtime behavior unaffected when local persistence fails.
+            }
+        }
+
+        private void MoveWindowToDefaultPosition()
+        {
+            Left = SystemParameters.WorkArea.Width - Width - 20;
+            Top = 20;
+        }
+
+        private bool IsPositionValid(double left, double top, double width, double height)
+        {
+            if (double.IsNaN(left) || double.IsNaN(top))
+            {
+                return false;
+            }
+
             const double margin = 5;
             foreach (var screen in WindowsServices.GetAllScreensWorkArea())
             {
                 if (left >= screen.Left + margin &&
-                    left + this.ActualWidth <= screen.Right - margin &&
+                    left + width <= screen.Right - margin &&
                     top >= screen.Top + margin &&
-                    top + this.ActualHeight <= screen.Bottom - margin)
+                    top + height <= screen.Bottom - margin)
                 {
                     return true;
                 }
             }
+
             return false;
-        }
-
-
-        private void LoadWindowPosition()
-        {
-            if (File.Exists(SETTINGS_FILE))
-            {
-                try
-                {
-                    string json = File.ReadAllText(SETTINGS_FILE);
-                    var settings = JsonSerializer.Deserialize<WindowSettings>(json);
-                    // 检查位置是否在屏幕可见范围内
-                    if (IsPositionValid(settings.Left, settings.Top))
-                    {
-                        this.Left = settings.Left;
-                        this.Top = settings.Top;
-                        return;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"加载设置失败: {ex.Message}");
-                }
-            }
-            // 默认位置：屏幕右上角
-            this.Left = SystemParameters.WorkArea.Width - this.Width - 20;
-            this.Top = 20;
-        }
-
-        private void SaveWindowPosition()
-        {
-            var settings = new WindowSettings
-            {
-                Left = this.Left,
-                Top = this.Top
-            };
-            try
-            {
-                var options = new JsonSerializerOptions { WriteIndented = true };
-                string json = JsonSerializer.Serialize(settings, options);
-                File.WriteAllText(SETTINGS_FILE, json);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"保存设置失败: {ex.Message}");
-            }
-        }
-
-        protected override void OnClosed(EventArgs e)
-        {
-            base.OnClosed(e);
-            _timer.Stop();
-        }
-
-
-        public class WindowSettings
-        {
-            public double Left { get; set; }
-            public double Top { get; set; }
         }
     }
 }
-    
+

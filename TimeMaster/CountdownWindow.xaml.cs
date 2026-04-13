@@ -1,35 +1,27 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading.Tasks;
+﻿using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Xml;
 
 namespace TimeMaster
 {
     public partial class CountdownWindow : Window
     {
-        public event Action CancelClicked;
-        private readonly System.Timers.Timer _updateTimer = new System.Timers.Timer(1000);
+        public event Action? CancelClicked;
+
+        private readonly System.Timers.Timer _updateTimer = new(1000);
         private int _secondsLeft;
         private bool _autoClose = true;
 
+        private readonly Brush _background1 = new SolidColorBrush(Color.FromArgb(0x99, 0, 0, 0));
+        private readonly Brush _background2 = new SolidColorBrush(Color.FromArgb(0x60, 0, 0, 0));
+        private readonly Brush _background3 = new SolidColorBrush(Color.FromArgb(0x40, 0, 0, 0));
+        private readonly Brush _background0 = new SolidColorBrush(Color.FromArgb(0x00, 0, 0, 0));
 
-        public CountdownWindow(TimerElement timer)
+        public CountdownWindow(ReminderSetting reminder)
+            : this(reminder.CountdownSeconds, reminder.AutoCloseTip)
         {
-            InitializeComponent();
-            var match = Regex.Match(timer.TipLine1, @"^(.*)\{0\}(.*)$");
-            this.tipLine1L.Text = match.Groups[1].Value; // "还有"
-            this.tipLine1R.Text = match.Groups[2].Value; // "秒就到点了"
-            this.tipLine2.Text = timer.TipLine2;
-            _secondsLeft = timer.CountdownSeconds;
-            _autoClose = timer.AutoCloseTip;
-            this.Init();
-
+            ApplyTipText(reminder.TipLine1, reminder.TipLine2);
         }
 
         public CountdownWindow(int seconds, bool autoClose)
@@ -37,8 +29,7 @@ namespace TimeMaster
             InitializeComponent();
             _secondsLeft = seconds;
             _autoClose = autoClose;
-            this.Init();
-
+            Init();
         }
 
         public CountdownWindow() : this(15, true)
@@ -46,12 +37,12 @@ namespace TimeMaster
         }
 
         private void Init()
-        {  
-            this.WindowStartupLocation = WindowStartupLocation.CenterScreen;
-            this.WindowState = WindowState.Maximized;
+        {
+            WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            WindowState = WindowState.Maximized;
             UpdateCountdownDisplay();
-            // 设置更新计时器
-            _updateTimer.Elapsed += (s, e) => Dispatcher.Invoke(() =>
+
+            _updateTimer.Elapsed += (_, _) => Dispatcher.Invoke(() =>
             {
                 _secondsLeft--;
                 UpdateCountdownDisplay();
@@ -59,58 +50,72 @@ namespace TimeMaster
                 if (_secondsLeft <= 0)
                 {
                     _updateTimer.Stop();
-                    if (this._autoClose)
+                    if (_autoClose)
                     {
-                        this.Close();
+                        Close();
                     }
                 }
             });
+
             _updateTimer.Start();
         }
 
+        private void ApplyTipText(string tipLine1, string tipLine2)
+        {
+            var formattedText = string.IsNullOrWhiteSpace(tipLine1) ? "还有{0}秒就到点了" : tipLine1;
+            var match = Regex.Match(formattedText, @"^(.*)\{0\}(.*)$");
 
+            if (match.Success)
+            {
+                tipLine1L.Text = match.Groups[1].Value;
+                tipLine1R.Text = match.Groups[2].Value;
+            }
+            else
+            {
+                tipLine1L.Text = formattedText;
+                tipLine1R.Text = string.Empty;
+            }
 
-        private Brush _background1 = new SolidColorBrush(Color.FromArgb(0x99, 0, 0, 0));
-        private Brush _background2 = new SolidColorBrush(Color.FromArgb(0x60, 0, 0, 0));
-        private Brush _background3 = new SolidColorBrush(Color.FromArgb(0x40, 0, 0, 0));
-        private Brush _background0 = new SolidColorBrush(Color.FromArgb(0x00, 0, 0, 0));
+            tipLine2 = string.IsNullOrWhiteSpace(tipLine2) ? "请注意休息" : tipLine2;
+            this.tipLine2.Text = tipLine2;
+        }
+
         private void UpdateCountdownDisplay()
         {
             txtCountdown.Text = _secondsLeft.ToString();
-            // 根据剩余时间改变颜色
+
             if (_secondsLeft <= 10)
             {
                 txtCountdown.Foreground = Brushes.Red;
-                this.Background = _background1;
+                Background = _background1;
             }
             else if (_secondsLeft <= 20)
             {
                 txtCountdown.Foreground = Brushes.Red;
-                this.Background = _background2;
+                Background = _background2;
             }
             else if (_secondsLeft <= 30)
             {
                 txtCountdown.Foreground = Brushes.Orange;
-                this.Background = _background3;
+                Background = _background3;
             }
             else
             {
                 txtCountdown.Foreground = Brushes.White;
-                this.Background = _background0;
+                Background = _background0;
             }
         }
 
         private void Cancel_Click(object sender, RoutedEventArgs e)
         {
             _updateTimer.Stop();
-            this.CancelClicked?.Invoke();
-            this.Close();
+            CancelClicked?.Invoke();
+            Close();
         }
 
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
-            // 实现鼠标穿透
             var hwnd = new WindowInteropHelper(this).Handle;
             WindowsServices.SetWindowExTransparent(hwnd);
         }

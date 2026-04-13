@@ -3,7 +3,12 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.8.34309.116
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TimeMaster", "TimeMaster\TimeMaster.csproj", "{F6CEA45C-D9E5-43DA-9977-B7FF16E55B21}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TimeMaster", "TimeMaster\TimeMaster.csproj", "{F6CEA45C-D9E5-43DA-9977-B7FF16E55B21}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "解决方案项", "解决方案项", "{C6C4E67C-E592-432E-8FBC-DC56D4D4309D}"
+	ProjectSection(SolutionItems) = preProject
+		README.md = README.md
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

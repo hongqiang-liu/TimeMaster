@@ -1,0 +1,91 @@
+﻿name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore TimeMaster.sln
+
+      - name: Build (Release)
+        run: dotnet build TimeMaster.sln -c Release --no-restore
+
+      - name: Publish profiles
+        shell: pwsh
+        run: |
+          $project = 'TimeMaster/TimeMaster.csproj'
+          $profiles = @(
+            'win-x64-singlefile',
+            'win-x64-self-contained',
+            'win-x64-fdd-singlefile'
+          )
+
+          foreach ($profile in $profiles) {
+            Write-Host "Publishing profile: $profile"
+            dotnet publish $project -c Release -p:PublishProfile=$profile --nologo
+          }
+
+      - name: Package release assets
+        id: package
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}' } else { 'manual-${{ github.run_number }}' }
+          $publishRoot = 'TimeMaster/bin/Release/net8.0-windows/publish'
+          $releaseDir = 'release-assets'
+
+          if (Test-Path $releaseDir) {
+            Remove-Item -Path $releaseDir -Recurse -Force
+          }
+          New-Item -Path $releaseDir -ItemType Directory | Out-Null
+
+          $dirs = @(
+            'win-x64-singlefile',
+            'win-x64-self-contained',
+            'win-x64-fdd-singlefile'
+          )
+
+          foreach ($dir in $dirs) {
+            $source = Join-Path $publishRoot $dir
+            $zipName = "TimeMaster-$version-$dir.zip"
+            $zipPath = Join-Path $releaseDir $zipName
+            Compress-Archive -Path (Join-Path $source '*') -DestinationPath $zipPath -Force
+          }
+
+          $hashFile = Join-Path $releaseDir 'SHA256SUMS.txt'
+          Get-ChildItem -Path $releaseDir -Filter '*.zip' |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "$hash  $($_.Name)"
+            } | Set-Content -Path $hashFile -Encoding UTF8
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TimeMaster-release-assets
+          path: release-assets/*
+
+      - name: Create GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*
